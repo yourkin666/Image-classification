@@ -38,7 +38,8 @@ The service will start at `http://localhost:5000`
 
 ```json
 {
-  "url": "https://example.com/image.jpg"
+  "url": "https://example.com/image.jpg",
+  "include_description": true
 }
 ```
 
@@ -50,9 +51,16 @@ The service will start at `http://localhost:5000`
     "https://example.com/image1.jpg",
     "https://example.com/image2.jpg",
     "https://example.com/image3.jpg"
-  ]
+  ],
+  "include_description": false
 }
 ```
+
+**Parameters:**
+- `url` (required): Image URL or array of image URLs
+- `include_description` (optional): Whether to include detailed description in response. Default: `true`
+  - `true`: Returns both `is_room` and `description` fields
+  - `false`: Returns only `is_room` field (faster response, less data)
 
 **Response Format:**
 
@@ -131,15 +139,20 @@ The service will start at `http://localhost:5000`
 ### Using curl
 
 ```bash
-# Analyze single room image
+# Analyze single room image (with description)
 curl -X POST http://localhost:5000/analyze_room \
   -H "Content-Type: application/json" \
-  -d '{"url": "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800"}'
+  -d '{"url": "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800", "include_description": true}'
 
-# Analyze multiple images
+# Analyze single room image (without description - faster)
 curl -X POST http://localhost:5000/analyze_room \
   -H "Content-Type: application/json" \
-  -d '{"url": ["https://example.com/image1.jpg", "https://example.com/image2.jpg"]}'
+  -d '{"url": "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800", "include_description": false}'
+
+# Analyze multiple images (without description)
+curl -X POST http://localhost:5000/analyze_room \
+  -H "Content-Type: application/json" \
+  -d '{"url": ["https://example.com/image1.jpg", "https://example.com/image2.jpg"], "include_description": false}'
 
 # Health check
 curl http://localhost:5000/health
