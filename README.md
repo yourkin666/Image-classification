@@ -59,8 +59,8 @@ The service will start at `http://localhost:5000`
 **Parameters:**
 - `url` (required): Image URL or array of image URLs
 - `include_description` (optional): Whether to include detailed description in response. Default: `true`
-  - `true`: Returns both `is_room` and `description` fields
-  - `false`: Returns only `is_room` field (faster response, less data)
+  - `true`: Returns both `is_room` and `description` fields (uses full prompt for detailed analysis)
+  - `false`: Returns only `is_room` field (uses simplified prompt for faster response)
 
 **Response Format:**
 

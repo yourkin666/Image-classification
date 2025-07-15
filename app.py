@@ -89,16 +89,22 @@ def download_image(url):
         raise Exception(f"无法下载图片: {str(e)}")
 
 
-def analyze_image_with_gemini(image_data, mime_type):
+def analyze_image_with_gemini(image_data, mime_type, include_description=True):
     """
     使用Gemini大模型分析图片是否为房间并描述内容
+    Args:
+        image_data: base64编码的图片数据
+        mime_type: 图片的MIME类型
+        include_description: 是否包含详细描述，默认为True
     """
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         model = "gemini-2.5-pro"
 
-        # 系统提示词 - 要求返回JSON格式
-        system_prompt = """Analyze the provided image and determine if it is a room, then provide a structured description.
+        # 根据是否包含描述选择不同的系统提示词
+        if include_description:
+            # 完整的系统提示词 - 要求返回JSON格式
+            system_prompt = """Analyze the provided image and determine if it is a room, then provide a structured description.
 
 Definition:
 A "room" is defined as an interior space within a building, intended for human occupancy or activity.
@@ -122,6 +128,22 @@ Description Guidelines:
 - room_type: 必须从提供的房型列表中选择一个，如果不匹配任何类型则选择"其他"
 - basic_info: 侧重整体风格与布局，用精炼语言描述
 - features: 用一句话描述最显著的特点
+
+IMPORTANT: Return ONLY the JSON object, no other text or explanation."""
+        else:
+            # 简化的系统提示词 - 只判断是否为房间
+            system_prompt = """Analyze the provided image and determine if it is a room.
+
+Definition:
+A "room" is defined as an interior space within a building, intended for human occupancy or activity.
+
+Rules:
+1. Analyze the content of the image carefully.
+2. Determine if the image matches the definition of a "room".
+3. You MUST return ONLY a valid JSON object in the following format:
+{
+    "is_room": true/false
+}
 
 IMPORTANT: Return ONLY the JSON object, no other text or explanation."""
 
@@ -164,18 +186,24 @@ IMPORTANT: Return ONLY the JSON object, no other text or explanation."""
             if 'is_room' not in result_json:
                 raise ValueError("JSON格式不完整")
 
-            # 提取各个字段
+            # 提取is_room字段
             is_room = result_json['is_room']
-            room_type = result_json.get('room_type', '其他')
-            basic_info = result_json.get('basic_info', '')
-            features = result_json.get('features', '')
 
-            # 构建结构化描述
-            description = {
-                'room_type': room_type,
-                'basic_info': basic_info,
-                'features': features
-            }
+            if include_description:
+                # 提取详细描述字段
+                room_type = result_json.get('room_type', '其他')
+                basic_info = result_json.get('basic_info', '')
+                features = result_json.get('features', '')
+
+                # 构建结构化描述
+                description = {
+                    'room_type': room_type,
+                    'basic_info': basic_info,
+                    'features': features
+                }
+            else:
+                # 不包含描述时，返回空的结构
+                description = {}
 
             return is_room, description
 
@@ -219,11 +247,14 @@ IMPORTANT: Return ONLY the JSON object, no other text or explanation."""
                 pass
 
             # 如果无法解析，返回默认结构
-            description = {
-                'room_type': '其他' if is_room else '',
-                'basic_info': result_text[:100] + "..." if len(result_text) > 100 else result_text,
-                'features': '图片分析成功，但无法提取详细特点'
-            }
+            if include_description:
+                description = {
+                    'room_type': '其他' if is_room else '',
+                    'basic_info': result_text[:100] + "..." if len(result_text) > 100 else result_text,
+                    'features': '图片分析成功，但无法提取详细特点'
+                }
+            else:
+                description = {}
 
             return is_room, description
 
@@ -302,7 +333,7 @@ def analyze_room():
 
                 # 使用Gemini分析
                 is_room, description = analyze_image_with_gemini(
-                    image_data, mime_type)
+                    image_data, mime_type, include_description)
 
                 logger.info(
                     f"第{i+1}张图片分析完成，结果: {'是房间' if is_room else '不是房间'}")
