@@ -2,6 +2,33 @@
 
 A Flask-based image classification service that uses Gemini AI to determine whether images are rooms and provide structured descriptions.
 
+## 🚀 Production Deployment with Nginx
+
+The service is configured with nginx reverse proxy running on port 80.
+
+### Service Management
+
+```bash
+# Start the service
+./start_service.sh
+
+# Stop the service  
+./stop_service.sh
+
+# Test the service
+python3 test_nginx_proxy.py
+```
+
+### Service URLs
+
+- **Main Service**: http://localhost (port 80)
+- **Health Check**: http://localhost/health
+- **API Documentation**: http://localhost/
+
+### Nginx Configuration
+
+The nginx configuration is located at `/etc/nginx/sites-available/image-classification` and proxies requests from port 80 to the Flask application running on port 5000.
+
 ## Features
 
 - 🏠 Uses Gemini 2.5 Pro AI model for image analysis
@@ -14,8 +41,25 @@ A Flask-based image classification service that uses Gemini AI to determine whet
 
 ## Installation
 
+### 1. 安装依赖
+
 ```bash
 pip install -r requirements.txt
+```
+
+### 2. 配置环境变量
+
+复制示例环境变量文件并配置你的API密钥：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件，设置你的Gemini API密钥：
+
+```bash
+# 从 https://aistudio.google.com/app/apikey 获取API密钥
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
 ## Quick Start
