@@ -2,13 +2,16 @@ import os
 import base64
 import requests
 import re
+import asyncio
+import functools
+import time
 from urllib.parse import urlparse, parse_qs
 from io import BytesIO
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Dict, Tuple, Any
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -38,6 +41,24 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise ValueError("请设置环境变量 GEMINI_API_KEY")
 
+# 并行处理配置
+DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "15"))  # 下载超时时间(秒)
+MAX_CONCURRENT_DOWNLOADS = int(
+    os.getenv("MAX_CONCURRENT_DOWNLOADS", "5"))  # 最大并发下载数
+MAX_CONCURRENT_ANALYSIS = int(
+    os.getenv("MAX_CONCURRENT_ANALYSIS", "3"))  # 最大并发分析数
+
+# 创建下载信号量和分析信号量，用于控制并发
+download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+analysis_semaphore = asyncio.Semaphore(MAX_CONCURRENT_ANALYSIS)
+
+# 全局会话对象，重用HTTP连接
+session = requests.Session()
+session.verify = False  # 禁用SSL验证（仅用于测试）
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+})
+
 # ----------------- 业务逻辑函数 -----------------
 
 
@@ -57,26 +78,77 @@ def extract_image_url_from_google_search(google_url):
         return None
 
 
+def is_likely_image_url(url):
+    """根据URL扩展名判断是否可能为图片"""
+    image_extensions = ('.jpg', '.jpeg', '.png', '.gif',
+                        '.bmp', '.webp', '.tiff', '.tif')
+    return any(url.lower().endswith(ext) for ext in image_extensions)
+
+
+def is_valid_image_mime_type(content_type, url):
+    """检查MIME类型或URL扩展名是否表示图片"""
+    content_type = content_type.lower()
+
+    # 标准图片MIME类型
+    if content_type.startswith('image/'):
+        return True
+
+    # 允许 application/octet-stream，但需要URL看起来像图片
+    if content_type == 'application/octet-stream' and is_likely_image_url(url):
+        return True
+
+    # 其他可能的二进制类型，如果URL看起来像图片
+    binary_types = ['application/binary',
+                    'binary/octet-stream', 'application/unknown']
+    if content_type in binary_types and is_likely_image_url(url):
+        return True
+
+    return False
+
+
 def download_image(url):
     try:
-        session = requests.Session()
-        session.verify = False  # 禁用SSL验证（仅用于测试）
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = session.get(url, timeout=30, headers=headers)
+        start_time = time.time()
+        response = session.get(url, timeout=DOWNLOAD_TIMEOUT)
         response.raise_for_status()
         content_type = response.headers.get('content-type', '').lower()
+
+        # 检查是否为HTML页面
         if 'text/html' in content_type:
             raise Exception(
                 "URL返回的是HTML页面，不是图片文件。请使用直接的图片URL，而不是Google搜索页面URL")
-        if not content_type.startswith('image/'):
-            raise Exception(f"不支持的MIME类型: {content_type}")
+
+        # 使用更智能的MIME类型检查
+        if not is_valid_image_mime_type(content_type, url):
+            # 如果MIME类型不匹配，但URL看起来像图片，给出警告但继续处理
+            if is_likely_image_url(url):
+                logger.warning(
+                    f"MIME类型 {content_type} 不是标准图片类型，但URL似乎是图片，尝试继续处理")
+                # 为 application/octet-stream 设置默认图片类型
+                if content_type == 'application/octet-stream':
+                    if url.lower().endswith(('.jpg', '.jpeg')):
+                        content_type = 'image/jpeg'
+                    elif url.lower().endswith('.png'):
+                        content_type = 'image/png'
+                    elif url.lower().endswith('.gif'):
+                        content_type = 'image/gif'
+                    elif url.lower().endswith('.webp'):
+                        content_type = 'image/webp'
+                    else:
+                        content_type = 'image/jpeg'  # 默认为jpeg
+            else:
+                raise Exception(f"不支持的MIME类型: {content_type}")
+
         image_data = base64.b64encode(response.content).decode('utf-8')
+        download_time = time.time() - start_time
+        logger.info(f"图片下载完成，用时: {download_time:.2f}秒, URL: {url}")
         return image_data, content_type
     except requests.exceptions.SSLError as e:
         logger.error(f"SSL连接错误: {str(e)}")
         raise Exception(f"SSL连接失败，请检查图片URL是否正确")
+    except requests.exceptions.Timeout as e:
+        logger.error(f"下载超时: {str(e)}")
+        raise Exception(f"下载超时，请检查图片URL是否可访问或增加超时设置")
     except requests.exceptions.RequestException as e:
         logger.error(f"网络请求错误: {str(e)}")
         raise Exception(f"网络请求失败: {str(e)}")
@@ -85,25 +157,81 @@ def download_image(url):
         raise Exception(f"无法下载图片: {str(e)}")
 
 
-def analyze_image_with_gemini(image_data, mime_type, include_description=True):
+def ensure_valid_mime_type_for_gemini(mime_type, url=None):
+    """确保MIME类型是Gemini API支持的格式"""
+    # Gemini API支持的图片MIME类型
+    supported_types = [
+        'image/jpeg', 'image/jpg', 'image/png', 'image/gif',
+        'image/webp', 'image/bmp', 'image/tiff'
+    ]
+
+    mime_type = mime_type.lower()
+
+    # 如果已经是支持的类型，直接返回
+    if mime_type in supported_types:
+        return mime_type
+
+    # 如果是 application/octet-stream 或其他二进制类型，根据URL推断
+    if mime_type in ['application/octet-stream', 'application/binary', 'binary/octet-stream']:
+        if url:
+            if url.lower().endswith(('.jpg', '.jpeg')):
+                return 'image/jpeg'
+            elif url.lower().endswith('.png'):
+                return 'image/png'
+            elif url.lower().endswith('.gif'):
+                return 'image/gif'
+            elif url.lower().endswith('.webp'):
+                return 'image/webp'
+            elif url.lower().endswith('.bmp'):
+                return 'image/bmp'
+            elif url.lower().endswith(('.tiff', '.tif')):
+                return 'image/tiff'
+        # 默认返回 jpeg
+        return 'image/jpeg'
+
+    # 如果是其他 image/ 类型，尝试映射到支持的类型
+    if mime_type.startswith('image/'):
+        if 'jpeg' in mime_type or 'jpg' in mime_type:
+            return 'image/jpeg'
+        elif 'png' in mime_type:
+            return 'image/png'
+        elif 'gif' in mime_type:
+            return 'image/gif'
+        elif 'webp' in mime_type:
+            return 'image/webp'
+        elif 'bmp' in mime_type:
+            return 'image/bmp'
+        elif 'tiff' in mime_type or 'tif' in mime_type:
+            return 'image/tiff'
+
+    # 默认返回 jpeg
+    return 'image/jpeg'
+
+
+def analyze_image_with_gemini(image_data, mime_type, include_description=True, url=None):
     try:
+        start_time = time.time()
+        # 确保MIME类型是Gemini API支持的格式
+        safe_mime_type = ensure_valid_mime_type_for_gemini(mime_type, url)
+        if safe_mime_type != mime_type:
+            logger.info(
+                f"将MIME类型从 {mime_type} 转换为 {safe_mime_type} 以兼容Gemini API")
+
         client = genai.Client(api_key=GEMINI_API_KEY)
         model = "gemini-2.0-flash-lite"
         if include_description:
             system_prompt = """Analyze the provided image and determine if it is a room, then provide a structured description.\n\nDefinition:\nA \"room\" is defined as an interior space within a building, intended for human occupancy or activity.\n\nRoom Types:\n[\"客厅\", \"家庭室\", \"餐厅\", \"厨房\", \"主卧室\", \"卧室\", \"客房\", \"卫生间\", \"浴室\", \"书房\", \"家庭办公室\", \"洗衣房\", \"储藏室\", \"食品储藏间\", \"玄关\", \"门厅\", \"走廊\", \"阳台\", \"地下室\", \"阁楼\", \"健身房\", \"家庭影院\", \"游戏室\", \"娱乐室\", \"其他\"]\n\nRules:\n1. Analyze the content of the image carefully.\n2. Determine if the image matches the definition of a \"room\".\n3. If it's a room, identify the room type from the list above.\n4. You MUST return ONLY a valid JSON object in the following format:\n{\n    \"is_room\": true/false,\n    \"room_type\": \"房型名称（从列表中选一个）\",\n    \"basic_info\": \"基本信息：精炼描述整体风格与布局\",\n    \"features\": \"特点：用最精炼的语言一句话描述最显著特点\"\n}\n\nDescription Guidelines:\n- room_type: 必须从提供的房型列表中选择一个，如果不匹配任何类型则选择\"其他\"\n- basic_info: 侧重整体风格与布局，用精炼语言描述\n- features: 用一句话描述最显著的特点\n\nIMPORTANT: Return ONLY the JSON object, no other text or explanation."""
         else:
             system_prompt = """Analyze the provided image and determine if it is a room.\n\nDefinition:\nA \"room\" is defined as an interior space within a building, intended for human occupancy or activity.\n\nRules:\n1. Analyze the content of the image carefully.\n2. Determine if the image matches the definition of a \"room\".\n3. You MUST return ONLY a valid JSON object in the following format:\n{\n    \"is_room\": true/false\n}\n\nIMPORTANT: Return ONLY the JSON object, no other text or explanation."""
-        contents = [
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_bytes(
-                        mime_type=mime_type,
-                        data=base64.b64decode(image_data)
-                    ),
-                ],
-            ),
-        ]
+        content = types.Content(
+            role="user",
+            parts=[
+                types.Part.from_bytes(
+                    mime_type=safe_mime_type,
+                    data=base64.b64decode(image_data)
+                ),
+            ],
+        )
         generate_content_config = types.GenerateContentConfig(
             system_instruction=[
                 types.Part.from_text(text=system_prompt),
@@ -112,10 +240,10 @@ def analyze_image_with_gemini(image_data, mime_type, include_description=True):
         )
         response = client.models.generate_content(
             model=model,
-            contents=contents,
+            contents=content,
             config=generate_content_config,
         )
-        result_text = response.text.strip()
+        result_text = response.text.strip() if response.text else ""
         try:
             import json
             result_json = json.loads(result_text)
@@ -133,6 +261,8 @@ def analyze_image_with_gemini(image_data, mime_type, include_description=True):
                 }
             else:
                 description = {}
+            analysis_time = time.time() - start_time
+            logger.info(f"图片分析完成，用时: {analysis_time:.2f}秒")
             return is_room, description
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Gemini返回的不是有效JSON格式: {result_text}")
@@ -157,6 +287,8 @@ def analyze_image_with_gemini(image_data, mime_type, include_description=True):
                             'basic_info': basic_info,
                             'features': features
                         }
+                        analysis_time = time.time() - start_time
+                        logger.info(f"图片分析完成(从代码块解析)，用时: {analysis_time:.2f}秒")
                         return is_room, description
             except:
                 pass
@@ -168,6 +300,8 @@ def analyze_image_with_gemini(image_data, mime_type, include_description=True):
                 }
             else:
                 description = {}
+            analysis_time = time.time() - start_time
+            logger.info(f"图片分析完成(非标准格式)，用时: {analysis_time:.2f}秒")
             return is_room, description
     except Exception as e:
         logger.error(f"Gemini分析失败: {str(e)}")
@@ -211,11 +345,103 @@ def index():
     }
 
 
+@app.get("/health")
+async def health():
+    return {
+        'status': 'healthy',
+        'service': 'image-room-classifier'
+    }
+
+
+async def process_image(image_url, include_description):
+    """处理单个图片的异步函数"""
+    try:
+        if not image_url:
+            return {
+                'url': image_url,
+                'success': False,
+                'error': '图片URL不能为空'
+            }
+
+        actual_image_url = image_url
+        if 'google.com/imgres' in image_url:
+            extracted_url = extract_image_url_from_google_search(image_url)
+            if extracted_url:
+                actual_image_url = extracted_url
+                logger.info(f"从Google搜索URL提取到实际图片URL: {actual_image_url}")
+            else:
+                return {
+                    'url': image_url,
+                    'success': False,
+                    'error': '无法从Google搜索URL中提取图片URL'
+                }
+
+        logger.info(f"开始处理图片: {actual_image_url}")
+        # 下载图片(使用信号量控制并发)
+        async with download_semaphore:
+            try:
+                # 在异步环境中调用同步函数
+                loop = asyncio.get_event_loop()
+                image_data, mime_type = await loop.run_in_executor(
+                    None,
+                    functools.partial(download_image, actual_image_url)
+                )
+            except Exception as e:
+                return {
+                    'url': image_url,
+                    'success': False,
+                    'error': str(e)
+                }
+
+        # 分析图片(使用信号量控制并发)
+        async with analysis_semaphore:
+            try:
+                # 在异步环境中调用同步函数
+                is_room, description = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        analyze_image_with_gemini,
+                        image_data,
+                        mime_type,
+                        include_description,
+                        actual_image_url
+                    )
+                )
+            except Exception as e:
+                return {
+                    'url': image_url,
+                    'success': False,
+                    'error': str(e)
+                }
+
+        logger.info(f"图片分析完成，结果: {'是房间' if is_room else '不是房间'}")
+        result_item = {
+            'url': image_url,
+            'actual_url': actual_image_url if actual_image_url != image_url else None,
+            'success': True,
+            'is_room': is_room
+        }
+
+        if include_description:
+            result_item['description'] = description
+
+        return result_item
+    except Exception as e:
+        logger.error(f"处理图片时发生错误: {str(e)}")
+        return {
+            'url': image_url,
+            'success': False,
+            'error': str(e)
+        }
+
+
 @app.post("/analyze_room")
 async def analyze_room(request: AnalyzeRoomRequest):
     try:
+        start_time = time.time()
         urls = request.url
         include_description = request.include_description
+
         if isinstance(urls, str):
             urls = [urls]
         if not urls or not isinstance(urls, list):
@@ -223,56 +449,19 @@ async def analyze_room(request: AnalyzeRoomRequest):
                 'success': False,
                 'error': 'URL参数必须是字符串或数组'
             })
-        results = []
-        for i, image_url in enumerate(urls):
-            try:
-                if not image_url:
-                    results.append({
-                        'url': image_url,
-                        'success': False,
-                        'error': '图片URL不能为空'
-                    })
-                    continue
-                actual_image_url = image_url
-                if 'google.com/imgres' in image_url:
-                    extracted_url = extract_image_url_from_google_search(
-                        image_url)
-                    if extracted_url:
-                        actual_image_url = extracted_url
-                        logger.info(
-                            f"从Google搜索URL提取到实际图片URL: {actual_image_url}")
-                    else:
-                        results.append({
-                            'url': image_url,
-                            'success': False,
-                            'error': '无法从Google搜索URL中提取图片URL'
-                        })
-                        continue
-                logger.info(f"开始分析第{i+1}张图片: {actual_image_url}")
-                image_data, mime_type = download_image(actual_image_url)
-                is_room, description = analyze_image_with_gemini(
-                    image_data, mime_type, include_description)
-                logger.info(
-                    f"第{i+1}张图片分析完成，结果: {'是房间' if is_room else '不是房间'}")
-                result_item = {
-                    'url': image_url,
-                    'actual_url': actual_image_url if actual_image_url != image_url else None,
-                    'success': True,
-                    'is_room': is_room
-                }
-                if include_description:
-                    result_item['description'] = description
-                results.append(result_item)
-            except Exception as e:
-                logger.error(f"处理第{i+1}张图片时发生错误: {str(e)}")
-                results.append({
-                    'url': image_url,
-                    'success': False,
-                    'error': str(e)
-                })
+
+        # 并行处理所有图片
+        tasks = [process_image(url, include_description) for url in urls]
+        results = await asyncio.gather(*tasks)
+
+        total_time = time.time() - start_time
+        logger.info(
+            f"批量处理完成 {len(urls)} 张图片，总用时: {total_time:.2f}秒，平均每张: {total_time/len(urls):.2f}秒")
+
         return {
             'success': True,
             'total': len(urls),
+            'processing_time': f"{total_time:.2f}秒",
             'results': results
         }
     except Exception as e:
@@ -281,11 +470,3 @@ async def analyze_room(request: AnalyzeRoomRequest):
             'success': False,
             'error': str(e)
         })
-
-
-@app.get("/health")
-def health_check():
-    return {
-        'status': 'healthy',
-        'service': 'image-room-classifier'
-    }
