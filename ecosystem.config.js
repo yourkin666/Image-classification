@@ -3,7 +3,7 @@ module.exports = {
     {
       name: "image-classification-api",
       script: "/root/Image-classification/venv/bin/uvicorn",
-      args: "main:app --host 0.0.0.0 --port 5000",
+      args: "app.main:app --host 0.0.0.0 --port 5000",
       cwd: "/root/Image-classification",
       interpreter: "/root/Image-classification/venv/bin/python",
       env: {
