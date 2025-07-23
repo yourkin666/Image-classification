@@ -26,6 +26,11 @@ wheels/
 *.egg
 MANIFEST
 
+# Virtual Environment
+venv/
+env/
+ENV/
+
 # 日志文件
 *.log
 fastapi.log
