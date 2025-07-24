@@ -107,10 +107,38 @@ def analyze_image_with_gemini(image_data, mime_type, include_description=True, u
             response_preview=result_text[:200] + "..." if len(result_text) > 200 else result_text
         )
         
+        # 优化解析逻辑: 首先检查是否包含JSON代码块
+        result_json = None
+        parsing_method = "unknown"
+        
         try:
-            result_json = json.loads(result_text)
+            # 方法1: 检查是否包含JSON代码块，优先处理这种常见格式
+            if '```json' in result_text:
+                logger.debug(
+                    f"Detected JSON code block, extracting directly",
+                    request_id=request_id
+                )
+                json_start = result_text.find('```json') + 7
+                json_end = result_text.find('```', json_start)
+                if json_end != -1:
+                    json_content = result_text[json_start:json_end].strip()
+                    result_json = json.loads(json_content)
+                    parsing_method = "code_block"
+                else:
+                    raise ValueError("JSON代码块格式不完整")
+            else:
+                # 方法2: 尝试直接解析整个响应为JSON
+                logger.debug(
+                    f"No code block detected, attempting direct JSON parsing",
+                    request_id=request_id
+                )
+                result_json = json.loads(result_text)
+                parsing_method = "direct"
+            
+            # 验证JSON格式完整性
             if 'is_room' not in result_json:
-                raise ValueError("JSON格式不完整")
+                raise ValueError("JSON格式不完整: 缺少is_room字段")
+                
             is_room = result_json['is_room']
             if include_description:
                 room_type = result_json.get('room_type', '其他')
@@ -126,75 +154,73 @@ def analyze_image_with_gemini(image_data, mime_type, include_description=True, u
             analysis_time = time.time() - start_time
             
             logger.info(
-                f"Successfully parsed Gemini response as JSON",
+                f"Successfully parsed Gemini response",
                 request_id=request_id,
                 is_room=is_room,
                 room_type=room_type if include_description else None,
-                analysis_duration=f"{analysis_time:.3f}s"
+                analysis_duration=f"{analysis_time:.3f}s",
+                parsing_method=parsing_method
             )
             
             return is_room, description
+            
         except (json.JSONDecodeError, ValueError) as e:
+            # 只有在两种标准方法都失败时才记录警告并使用回退解析
             logger.warning(
-                f"Gemini response is not valid JSON format, attempting alternative parsing",
+                f"Standard JSON parsing methods failed, using fallback parsing",
                 request_id=request_id,
                 error_type=type(e).__name__,
-                raw_response=result_text[:500] + "..." if len(result_text) > 500 else result_text
+                attempted_method=parsing_method,
+                raw_response=result_text[:300] + "..." if len(result_text) > 300 else result_text
             )
             
+            # 回退解析逻辑
             result_text_lower = result_text.lower()
             is_room = False
             if 'true' in result_text_lower or '是房间' in result_text or '房间' in result_text:
                 is_room = True
                 
+            # 尝试其他可能的JSON提取方法
+            description = {}
             try:
-                if '```json' in result_text:
-                    logger.debug(
-                        f"Attempting to extract JSON from code block",
-                        request_id=request_id
-                    )
-                    json_start = result_text.find('```json') + 7
-                    json_end = result_text.find('```', json_start)
-                    if json_end != -1:
-                        json_content = result_text[json_start:json_end].strip()
-                        json_obj = json.loads(json_content)
-                        room_type = json_obj.get('room_type', '其他')
-                        basic_info = json_obj.get('basic_info', '')
-                        features = json_obj.get('features', '')
-                        if 'is_room' in json_obj:
-                            is_room = json_obj['is_room']
-                        description = {
-                            'room_type': room_type,
-                            'basic_info': basic_info,
-                            'features': features
-                        }
-                        analysis_time = time.time() - start_time
-                        
-                        logger.info(
-                            f"Successfully extracted JSON from code block",
-                            request_id=request_id,
-                            is_room=is_room,
-                            room_type=room_type,
-                            analysis_duration=f"{analysis_time:.3f}s"
-                        )
-                        
-                        return is_room, description
+                # 尝试寻找其他格式的JSON
+                import re
+                json_pattern = r'\{[^{}]*"is_room"[^{}]*\}'
+                matches = re.findall(json_pattern, result_text, re.DOTALL)
+                if matches:
+                    for match in matches:
+                        try:
+                            result_json = json.loads(match)
+                            if 'is_room' in result_json:
+                                is_room = result_json['is_room']
+                                if include_description:
+                                    room_type = result_json.get('room_type', '其他')
+                                    basic_info = result_json.get('basic_info', '')
+                                    features = result_json.get('features', '')
+                                    description = {
+                                        'room_type': room_type,
+                                        'basic_info': basic_info,
+                                        'features': features
+                                    }
+                                break
+                        except:
+                            continue
             except Exception as parse_error:
-                logger.warning(
-                    f"Failed to parse JSON from code block",
+                logger.debug(
+                    f"Regex-based JSON extraction also failed",
                     request_id=request_id,
-                    error_type=type(parse_error).__name__,
-                    error_message=str(parse_error)
+                    error_type=type(parse_error).__name__
                 )
                 
-            if include_description:
+            if include_description and not description:
                 description = {
                     'room_type': '其他' if is_room else '',
                     'basic_info': result_text[:100] + "..." if len(result_text) > 100 else result_text,
                     'features': '图片分析成功，但无法提取详细特点'
                 }
-            else:
+            elif not description:
                 description = {}
+                
             analysis_time = time.time() - start_time
             
             logger.info(
