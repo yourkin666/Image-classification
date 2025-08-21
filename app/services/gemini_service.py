@@ -2,24 +2,23 @@ import base64
 import time
 import json
 import traceback
+import asyncio
+from typing import List, Optional
 from google import genai
 from google.genai import types
 from ..core.logging import logger
 from ..core.config import settings
-from ..utils.decorators import monitor_performance
 from ..utils.url_utils import ensure_valid_mime_type_for_gemini
 
 
-@monitor_performance("Gemini Image Analysis")
-def analyze_image_with_gemini(image_data, mime_type, include_description=True, url=None, request_id='unknown'):
-    """使用Gemini AI分析图片"""
+def analyze_image_with_gemini(image_data, mime_type, url=None, request_id='unknown'):
+    """使用Gemini AI分析图片是否为房间"""
     try:
         logger.info(
             f"Starting Gemini image analysis",
             request_id=request_id,
             url=url,
             mime_type=mime_type,
-            include_description=include_description,
             data_size=len(image_data) if image_data else 0
         )
         
@@ -48,12 +47,23 @@ def analyze_image_with_gemini(image_data, mime_type, include_description=True, u
             model=model
         )
         
-        if include_description:
-            system_prompt = """Analyze the provided image and determine if it is a room, then provide a structured description.\n\nDefinition:\nA \"room\" is defined as an interior space within a building, intended for human occupancy or activity.\n\nRoom Types:\n[\"客厅\", \"家庭室\", \"餐厅\", \"厨房\", \"主卧室\", \"卧室\", \"客房\", \"卫生间\", \"浴室\", \"书房\", \"家庭办公室\", \"洗衣房\", \"储藏室\", \"食品储藏间\", \"玄关\", \"门厅\", \"走廊\", \"阳台\", \"地下室\", \"阁楼\", \"健身房\", \"家庭影院\", \"游戏室\", \"娱乐室\", \"其他\"]\n\nRules:\n1. Analyze the content of the image carefully.\n2. Determine if the image matches the definition of a \"room\".\n3. If it's a room, identify the room type from the list above.\n4. You MUST return ONLY a valid JSON object in the following format:\n{\n    \"is_room\": true/false,\n    \"room_type\": \"房型名称（从列表中选一个）\",\n    \"basic_info\": \"基本信息：精炼描述整体风格与布局\",\n    \"features\": \"特点：用最精炼的语言一句话描述最显著特点\"\n}\n\nDescription Guidelines:\n- room_type: 必须从提供的房型列表中选择一个，如果不匹配任何类型则选择\"其他\"\n- basic_info: 侧重整体风格与布局，用精炼语言描述\n- features: 用一句话描述最显著的特点\n\nIMPORTANT: Return ONLY the JSON object, no other text or explanation."""
-            logger.debug("Using detailed analysis prompt", request_id=request_id)
-        else:
-            system_prompt = """Analyze the provided image and determine if it is a room.\n\nDefinition:\nA \"room\" is defined as an interior space within a building, intended for human occupancy or activity.\n\nRules:\n1. Analyze the content of the image carefully.\n2. Determine if the image matches the definition of a \"room\".\n3. You MUST return ONLY a valid JSON object in the following format:\n{\n    \"is_room\": true/false\n}\n\nIMPORTANT: Return ONLY the JSON object, no other text or explanation."""
-            logger.debug("Using basic analysis prompt", request_id=request_id)
+        # 简化的prompt，只判断是否为房间
+        system_prompt = """Analyze the image and determine if it shows a room.
+
+Definition:
+A "room" is defined as an interior space within a building, intended for human occupancy or activity.
+
+Rules:
+1. Analyze the content of the image carefully.
+2. Determine if the image matches the definition of a "room".
+3. You MUST return ONLY a valid JSON object in the following format:
+{
+    "is_room": true/false
+}
+
+IMPORTANT: Return ONLY the JSON object, no other text or explanation."""
+        
+        logger.debug("Using basic room analysis prompt", request_id=request_id)
         
         logger.debug(
             f"Preparing API request content",
@@ -103,141 +113,114 @@ def analyze_image_with_gemini(image_data, mime_type, include_description=True, u
         logger.debug(
             f"Raw Gemini response",
             request_id=request_id,
-            response_length=len(result_text),
-            response_preview=result_text[:200] + "..." if len(result_text) > 200 else result_text
+            response_text=result_text
         )
         
-        # 优化解析逻辑: 首先检查是否包含JSON代码块
-        result_json = None
-        parsing_method = "unknown"
-        
+        # 解析JSON响应
         try:
-            # 方法1: 检查是否包含JSON代码块，优先处理这种常见格式
-            if '```json' in result_text:
-                logger.debug(
-                    f"Detected JSON code block, extracting directly",
-                    request_id=request_id
-                )
-                json_start = result_text.find('```json') + 7
-                json_end = result_text.find('```', json_start)
-                if json_end != -1:
-                    json_content = result_text[json_start:json_end].strip()
-                    result_json = json.loads(json_content)
-                    parsing_method = "code_block"
-                else:
-                    raise ValueError("JSON代码块格式不完整")
-            else:
-                # 方法2: 尝试直接解析整个响应为JSON
-                logger.debug(
-                    f"No code block detected, attempting direct JSON parsing",
-                    request_id=request_id
-                )
-                result_json = json.loads(result_text)
-                parsing_method = "direct"
-            
-            # 验证JSON格式完整性
-            if 'is_room' not in result_json:
-                raise ValueError("JSON格式不完整: 缺少is_room字段")
-                
-            is_room = result_json['is_room']
-            if include_description:
-                room_type = result_json.get('room_type', '其他')
-                basic_info = result_json.get('basic_info', '')
-                features = result_json.get('features', '')
-                description = {
-                    'room_type': room_type,
-                    'basic_info': basic_info,
-                    'features': features
-                }
-            else:
-                description = {}
-            analysis_time = time.time() - start_time
+            result_json = json.loads(result_text)
+            is_room = result_json.get('is_room', False)
             
             logger.info(
                 f"Successfully parsed Gemini response",
                 request_id=request_id,
-                is_room=is_room,
-                room_type=room_type if include_description else None,
-                analysis_duration=f"{analysis_time:.3f}s",
-                parsing_method=parsing_method
+                is_room=is_room
             )
             
-            return is_room, description
+            return is_room
             
-        except (json.JSONDecodeError, ValueError) as e:
-            # 只有在两种标准方法都失败时才记录警告并使用回退解析
-            logger.warning(
-                f"Standard JSON parsing methods failed, using fallback parsing",
+        except json.JSONDecodeError as e:
+            logger.debug(
+                f"Failed to parse JSON response from Gemini, using fallback parsing",
                 request_id=request_id,
-                error_type=type(e).__name__,
-                attempted_method=parsing_method,
-                raw_response=result_text[:300] + "..." if len(result_text) > 300 else result_text
+                response_text=result_text,
+                error=str(e)
             )
-            
-            # 回退解析逻辑
-            result_text_lower = result_text.lower()
-            is_room = False
-            if 'true' in result_text_lower or '是房间' in result_text or '房间' in result_text:
-                is_room = True
+            # 如果JSON解析失败，尝试从文本中推断
+            if 'true' in result_text.lower():
+                return True
+            elif 'false' in result_text.lower():
+                return False
+            else:
+                # 默认返回False
+                return False
                 
-            # 尝试其他可能的JSON提取方法
-            description = {}
-            try:
-                # 尝试寻找其他格式的JSON
-                import re
-                json_pattern = r'\{[^{}]*"is_room"[^{}]*\}'
-                matches = re.findall(json_pattern, result_text, re.DOTALL)
-                if matches:
-                    for match in matches:
-                        try:
-                            result_json = json.loads(match)
-                            if 'is_room' in result_json:
-                                is_room = result_json['is_room']
-                                if include_description:
-                                    room_type = result_json.get('room_type', '其他')
-                                    basic_info = result_json.get('basic_info', '')
-                                    features = result_json.get('features', '')
-                                    description = {
-                                        'room_type': room_type,
-                                        'basic_info': basic_info,
-                                        'features': features
-                                    }
-                                break
-                        except:
-                            continue
-            except Exception as parse_error:
-                logger.debug(
-                    f"Regex-based JSON extraction also failed",
-                    request_id=request_id,
-                    error_type=type(parse_error).__name__
-                )
-                
-            if include_description and not description:
-                description = {
-                    'room_type': '其他' if is_room else '',
-                    'basic_info': result_text[:100] + "..." if len(result_text) > 100 else result_text,
-                    'features': '图片分析成功，但无法提取详细特点'
-                }
-            elif not description:
-                description = {}
-                
-            analysis_time = time.time() - start_time
-            
-            logger.info(
-                f"Completed analysis with fallback parsing",
-                request_id=request_id,
-                is_room=is_room,
-                analysis_duration=f"{analysis_time:.3f}s",
-                parsing_method="fallback"
-            )
-            
-            return is_room, description
     except Exception as e:
         logger.error(
-            f"Gemini analysis failed with exception",
+            f"Gemini image analysis failed",
             request_id=request_id,
+            url=url,
             error_type=type(e).__name__,
             error_message=str(e),
             stack_trace=traceback.format_exc()
         )
-        raise Exception(f"图片分析失败: {str(e)}") 
+        raise
+
+
+class GeminiService:
+    """Gemini AI服务类"""
+    
+    def __init__(self):
+        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        self.model = "gemini-2.0-flash-lite"
+    
+    async def generate_content_async(self, image_urls: List[str], prompt: str) -> Optional[str]:
+        """异步生成内容"""
+        try:
+            logger.info(f"开始异步内容生成: {len(image_urls)} 张图片")
+            
+            if not image_urls:
+                raise ValueError("没有提供图片URL")
+            
+            # 准备所有图片数据
+            parts = [types.Part.from_text(text=prompt)]
+            
+            import requests
+            
+            for i, image_url in enumerate(image_urls):
+                try:
+                    logger.info(f"下载第{i+1}张图片: {image_url}")
+                    response = requests.get(image_url, timeout=30)
+                    response.raise_for_status()
+                    
+                    mime_type = response.headers.get('content-type', 'image/jpeg')
+                    logger.info(f"图片{i+1}下载成功, 大小: {len(response.content)} 字节")
+                    
+                    # 添加图片到parts
+                    parts.append(
+                        types.Part.from_bytes(
+                            mime_type=mime_type,
+                            data=response.content
+                        )
+                    )
+                    
+                except Exception as e:
+                    logger.warning(f"图片{i+1}下载失败: {image_url}, 错误: {e}")
+                    continue
+            
+            if len(parts) == 1:  # 只有prompt，没有图片
+                raise ValueError("没有成功下载任何图片")
+            
+            logger.info(f"成功准备 {len(parts)-1} 张图片用于分析")
+            
+            # 调用Gemini API
+            content = types.Content(
+                role="user",
+                parts=parts,
+            )
+            
+            logger.info(f"发送内容生成请求，包含 {len(parts)-1} 张图片")
+            
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=content,
+            )
+            
+            result_text = response.text.strip() if response.text else ""
+            logger.info(f"内容生成完成, 响应长度: {len(result_text)}")
+            
+            return result_text
+            
+        except Exception as e:
+            logger.error(f"内容生成失败: {e}")
+            return None 

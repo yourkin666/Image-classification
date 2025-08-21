@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .core.config import settings
 from .core.logging import logger
-from .core.middleware import RequestTrackingMiddleware
 from .api.v1.router import api_router
 
 # 初始化FastAPI应用
@@ -12,10 +11,7 @@ app = FastAPI(
     version=settings.APP_VERSION
 )
 
-# 添加请求跟踪中间件 - 暂时禁用，基本功能已工作
-# app.middleware("http")(RequestTrackingMiddleware)
-
-# 允许跨域（如有需要可调整）
+# 允许跨域
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,13 +24,53 @@ app.add_middleware(
 app.include_router(api_router)
 
 # 记录服务配置
-logger.info(
-    "Service configuration loaded",
-    download_timeout=settings.DOWNLOAD_TIMEOUT,
-    max_concurrent_downloads=settings.MAX_CONCURRENT_DOWNLOADS,
-    max_concurrent_analysis=settings.MAX_CONCURRENT_ANALYSIS
-)
+logger.info("房源图片分析系统启动成功")
+
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时的初始化"""
+    logger.info("应用启动，初始化资源...")
+
+@app.on_event("shutdown")
+async def shutdown_event_handler():
+    """应用关闭时的清理"""
+    logger.info("应用关闭，清理资源...")
+    
+    try:
+        # 设置清理超时时间
+        import asyncio
+        
+        # 清理异步处理器（设置超时）
+        try:
+            from .services.async_processor import async_processor
+            # 使用 asyncio.wait_for 设置超时
+            await asyncio.wait_for(
+                asyncio.to_thread(async_processor.cleanup), 
+                timeout=3.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("异步处理器清理超时，强制跳过")
+        except Exception as e:
+            logger.error(f"异步处理器清理失败: {e}")
+        
+        # 关闭数据库连接池（设置超时）
+        try:
+            from .core.database import close_database_pool
+            await asyncio.wait_for(close_database_pool(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.warning("数据库连接池关闭超时，强制跳过")
+        except Exception as e:
+            logger.error(f"数据库连接池关闭失败: {e}")
+        
+        logger.info("资源清理完成")
+    except Exception as e:
+        logger.error(f"关闭事件处理失败: {e}")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=settings.HOST, port=settings.PORT) 
+    uvicorn.run(
+        app, 
+        host=settings.HOST, 
+        port=settings.PORT,
+        log_level=settings.LOG_LEVEL.lower()
+    ) 

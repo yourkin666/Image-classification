@@ -6,7 +6,6 @@ from ..core.logging import logger
 from ..core.config import settings
 from ..utils.image_utils import download_image
 from ..utils.url_utils import extract_image_url_from_google_search
-from ..utils.decorators import monitor_async_performance
 from .gemini_service import analyze_image_with_gemini
 
 
@@ -15,15 +14,13 @@ download_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
 analysis_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_ANALYSIS)
 
 
-@monitor_async_performance("Process Single Image")
-async def process_image(image_url, include_description, request_id='unknown'):
+async def process_image(image_url, request_id='unknown'):
     """处理单个图片的异步函数"""
     try:
         logger.info(
             f"Starting image processing",
             request_id=request_id,
-            url=image_url,
-            include_description=include_description
+            url=image_url
         )
         
         if not image_url:
@@ -86,10 +83,12 @@ async def process_image(image_url, include_description, request_id='unknown'):
             try:
                 # 在异步环境中调用同步函数
                 loop = asyncio.get_event_loop()
-                image_data, mime_type = await loop.run_in_executor(
+                download_result = await loop.run_in_executor(
                     None,
                     functools.partial(download_image, actual_image_url, request_id)
                 )
+                image_data = download_result['image_data']
+                mime_type = download_result['mime_type']
             except Exception as e:
                 logger.error(
                     f"Image download failed",
@@ -114,13 +113,12 @@ async def process_image(image_url, include_description, request_id='unknown'):
             
             try:
                 # 在异步环境中调用同步函数
-                is_room, description = await loop.run_in_executor(
+                is_room = await loop.run_in_executor(
                     None,
                     functools.partial(
                         analyze_image_with_gemini,
                         image_data,
                         mime_type,
-                        include_description,
                         actual_image_url,
                         request_id
                     )
@@ -143,19 +141,14 @@ async def process_image(image_url, include_description, request_id='unknown'):
             f"Image processing completed successfully",
             request_id=request_id,
             url=actual_image_url,
-            is_room=is_room,
-            room_type=description.get('room_type', None) if include_description else None
+            is_room=is_room
         )
         
         result_item = {
             'url': image_url,
-            'actual_url': actual_image_url if actual_image_url != image_url else None,
             'success': True,
             'is_room': is_room
         }
-
-        if include_description:
-            result_item['description'] = description
 
         return result_item
     except Exception as e:
@@ -173,27 +166,59 @@ async def process_image(image_url, include_description, request_id='unknown'):
         }
 
 
-async def process_batch_images(urls, include_description, request_id):
+async def process_batch_images(urls, request_id):
     """批处理多个图片"""
-    logger.info(
-        f"Starting parallel processing of {len(urls)} images",
-        request_id=request_id,
-        max_concurrent_downloads=settings.MAX_CONCURRENT_DOWNLOADS,
-        max_concurrent_analysis=settings.MAX_CONCURRENT_ANALYSIS
-    )
-
-    # 并行处理所有图片
-    tasks = [process_image(url, include_description, request_id) for url in urls]
-    results = await asyncio.gather(*tasks)
-
-    # 记录失败的URL
-    failed_urls = [result for result in results if not result.get('success', False)]
-    if failed_urls:
-        logger.warning(
-            f"Some images failed to process",
+    try:
+        logger.info(
+            f"Starting parallel processing of {len(urls)} images",
             request_id=request_id,
-            failed_count=len(failed_urls),
-            failed_urls=[r.get('url', 'unknown') for r in failed_urls[:5]]  # 只记录前5个
+            urls_count=len(urls)
         )
-
-    return results 
+        
+        # 创建任务列表
+        tasks = [process_image(url, request_id) for url in urls]
+        
+        # 并发执行所有任务
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 处理结果
+        processed_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(
+                    f"Task {i} failed with exception",
+                    request_id=request_id,
+                    url=urls[i],
+                    error_type=type(result).__name__,
+                    error_message=str(result)
+                )
+                processed_results.append({
+                    'url': urls[i],
+                    'success': False,
+                    'error': str(result)
+                })
+            else:
+                processed_results.append(result)
+        
+        logger.info(
+            f"Batch processing completed",
+            request_id=request_id,
+            total_images=len(urls),
+            successful_results=sum(1 for r in processed_results if r['success'])
+        )
+        
+        return processed_results
+        
+    except Exception as e:
+        logger.error(
+            f"Batch processing failed",
+            request_id=request_id,
+            error_type=type(e).__name__,
+            error_message=str(e)
+        )
+        # 返回所有失败的结果
+        return [{
+            'url': url,
+            'success': False,
+            'error': str(e)
+        } for url in urls] 

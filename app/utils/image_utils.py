@@ -5,7 +5,6 @@ import traceback
 from ..core.logging import logger
 from ..core.config import settings
 from .url_utils import is_valid_image_mime_type, is_likely_image_url
-from ..utils.decorators import monitor_performance
 
 
 # 全局会话对象，重用HTTP连接
@@ -16,7 +15,6 @@ session.headers.update({
 })
 
 
-@monitor_performance("Image Download")
 def download_image(url, request_id='unknown'):
     """下载图片并返回base64编码的数据和MIME类型"""
     try:
@@ -98,42 +96,36 @@ def download_image(url, request_id='unknown'):
             data_size=len(response.content)
         )
         
-        return image_data, content_type
+        return {
+            'image_data': image_data,
+            'mime_type': content_type,
+            'size': len(response.content)
+        }
         
-    except requests.exceptions.SSLError as e:
-        error_msg = f"SSL连接失败，请检查图片URL是否正确"
+    except requests.exceptions.Timeout:
+        error_msg = f"下载超时: {url}"
         logger.error(
-            f"SSL connection error: {str(e)}",
+            error_msg,
             request_id=request_id,
             url=url,
-            error_type=type(e).__name__,
-            stack_trace=traceback.format_exc()
+            timeout=settings.DOWNLOAD_TIMEOUT
         )
         raise Exception(error_msg)
-    except requests.exceptions.Timeout as e:
-        error_msg = f"下载超时，请检查图片URL是否可访问或增加超时设置"
+        
+    except requests.exceptions.RequestException as e:
+        error_msg = f"下载失败: {str(e)}"
         logger.error(
-            f"Download timeout: {str(e)}",
+            error_msg,
             request_id=request_id,
             url=url,
-            timeout=settings.DOWNLOAD_TIMEOUT,
             error_type=type(e).__name__
         )
         raise Exception(error_msg)
-    except requests.exceptions.RequestException as e:
-        error_msg = f"网络请求失败: {str(e)}"
-        logger.error(
-            f"Network request error: {str(e)}",
-            request_id=request_id,
-            url=url,
-            error_type=type(e).__name__,
-            stack_trace=traceback.format_exc()
-        )
-        raise Exception(error_msg)
+        
     except Exception as e:
-        error_msg = f"无法下载图片: {str(e)}"
+        error_msg = f"下载过程中发生未知错误: {str(e)}"
         logger.error(
-            f"Image download failed: {str(e)}",
+            error_msg,
             request_id=request_id,
             url=url,
             error_type=type(e).__name__,
