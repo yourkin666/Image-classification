@@ -9,9 +9,10 @@
 CREATE TABLE IF NOT EXISTS `qft_ai_room_analysis` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `room_id` varchar(64) NOT NULL COMMENT '房间ID',
-  `business_type` enum('whole_rent','centralized','shared_rent') NOT NULL COMMENT '业务类型',
+  `business_type` tinyint NOT NULL COMMENT '业务类型 1 集中 2 整租 3 合租',
   `content` text COMMENT '生成的房源内容(JSON格式，最大64KB)',
   `processing_status` enum('pending','processing','completed','failed') DEFAULT 'pending' COMMENT '处理状态',
+  `is_delete` tinyint NOT NULL DEFAULT '0' COMMENT '是否删除：0未删除 1已删除',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),

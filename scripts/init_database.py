@@ -105,19 +105,19 @@ async def insert_sample_data():
         {
             "room_id": "sample_room_001",
             "business_type": "whole_rent",
-            "content": '{"lighting_comfort": "采光充足，南北通透，居住舒适度高", "decoration_quality": "精装修，墙面整洁，维护良好", "space_layout": "空间布局合理，功能分区明确", "appliances_facilities": "基础电器齐全，生活便利"}',
+            "content": '{"lighting_comfort": "采光充足，南北通透，居住舒适度高", "decoration_quality": "精装修，墙面整洁，维护良好", "space_layout": "空间布局合理，功能分区明确", "appliances_facilities": "图片中可见的家具电器有限"}',
             "processing_status": "completed"
         },
         {
             "room_id": "sample_room_002", 
             "business_type": "centralized",
-            "content": '{"lighting_comfort": "采光良好，通风顺畅", "decoration_quality": "标准化装修，品质可靠", "space_layout": "空间紧凑实用，布局合理", "appliances_facilities": "设施完善，智能化程度高"}',
+            "content": '{"lighting_comfort": "采光良好，通风顺畅", "decoration_quality": "标准化装修，品质可靠", "space_layout": "空间紧凑实用，布局合理", "appliances_facilities": "图片中可见的家具电器有限"}',
             "processing_status": "completed"
         },
         {
             "room_id": "sample_room_003",
             "business_type": "shared_rent", 
-            "content": '{"lighting_comfort": "采光适中，通风良好", "decoration_quality": "装修简洁实用，维护到位", "space_layout": "共享空间设计合理，私密性好", "appliances_facilities": "基础设施齐全，性价比高"}',
+            "content": '{"lighting_comfort": "采光适中，通风良好", "decoration_quality": "装修简洁实用，维护到位", "space_layout": "共享空间设计合理，私密性好", "appliances_facilities": "图片中可见的家具电器有限"}',
             "processing_status": "completed"
         }
     ]

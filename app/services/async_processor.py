@@ -44,20 +44,18 @@ class AsyncContentProcessor:
             # 2. 更新状态为处理中
             await self.update_processing_status(room_id, "processing")
 
-            # 3. 生成内容
-            content = await self.generate_content_with_retry(image_urls, business_type, request_id)
+            # 3. 生成“特征JSON”内容（替换旧的自然语言描述方案）
+            features_json = await self.generate_features_with_retry(image_urls, request_id)
 
-            # 4. 验证内容
-            if not content:
-                raise ValueError("内容生成失败")
+            if not features_json:
+                features_json = ContentGenerator.default_features()
 
-            # 5. 格式化内容
-            content_json = ContentFormatter.format_content_for_storage(content)
-
-            # 6. 存储到数据库
+            # 4. 存储到数据库（直接以JSON字符串存入content字段）
+            import json as _json
+            content_json = _json.dumps(features_json, ensure_ascii=False)
             await self.save_to_database_with_retry(room_id, business_type, content_json)
 
-            # 7. 更新处理状态为完成
+            # 5. 更新处理状态为完成
             await self.update_processing_status(room_id, "completed", content_json)
 
             logger.info(f"异步处理完成: {room_id}")
@@ -68,7 +66,7 @@ class AsyncContentProcessor:
 
     async def generate_content_with_retry(self, image_urls: List[str], 
                                         business_type: str, request_id: str) -> Optional[Dict[str, str]]:
-        """内容生成带重试机制"""
+        """（保留旧接口，未使用）"""
         for attempt in range(self.max_retries):
             try:
                 logger.info(f"尝试生成内容 (第{attempt + 1}次): {request_id}")
@@ -108,6 +106,36 @@ class AsyncContentProcessor:
                     return ContentGenerator.generate_fallback_content(business_type)
                 else:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
+
+    async def generate_features_with_retry(self, image_urls: List[str], request_id: str) -> Optional[Dict[str, bool]]:
+        """特征JSON生成带重试机制（支持本地联调绕过AI）"""
+        import os as _os
+        # 若强制要求使用Gemini，则不允许绕过
+        if _os.getenv("DISABLE_GEMINI", "").lower() == "true":
+            raise RuntimeError("DISABLE_GEMINI is not allowed when GEMINI usage is enforced.")
+        if not self.gemini_service or not getattr(self.gemini_service, 'client', None):
+            raise RuntimeError("Gemini client not initialized. Ensure GEMINI_API_KEY is set.")
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"尝试生成特征JSON (第{attempt + 1}次): {request_id}")
+
+                prompt = ContentGenerator.generate_room_features_prompt()
+                response = await self.gemini_service.generate_content_async(image_urls, prompt)
+
+                if not response:
+                    raise ValueError("Gemini服务返回空响应")
+
+                features = ContentGenerator.parse_features_ai_response(response)
+                if features:
+                    return features
+                else:
+                    raise ValueError("特征JSON解析失败")
+
+            except Exception as e:
+                logger.error(f"特征JSON生成失败 (尝试 {attempt + 1}/{self.max_retries}): {e}")
+                if attempt == self.max_retries - 1:
+                    return ContentGenerator.default_features()
+                await asyncio.sleep(self.retry_delay * (attempt + 1))
 
     async def save_to_database_with_retry(self, room_id: str, business_type: str, 
                                         content: str) -> None:

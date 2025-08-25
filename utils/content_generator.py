@@ -156,19 +156,19 @@ class ContentGenerator:
                 "lighting_comfort": "房间采光良好，通风条件优越，居住舒适度较高",
                 "decoration_quality": "装修风格现代，维护状况良好，整体美观大方",
                 "space_layout": "空间布局合理，功能分区明确，储物空间充足",
-                "appliances_facilities": "基础电器配置完善，生活设施齐全，便利性良好"
+                "appliances_facilities": "图片中可见的家具电器有限"
             },
             "centralized": {
                 "lighting_comfort": "公寓采光充足，通风良好，居住环境舒适",
                 "decoration_quality": "标准化装修，品质可靠，维护状况良好",
                 "space_layout": "空间利用合理，布局紧凑实用，功能齐全",
-                "appliances_facilities": "设施配置标准化，智能化程度较高，生活便利"
+                "appliances_facilities": "图片中可见的家具电器有限"
             },
             "shared_rent": {
                 "lighting_comfort": "房间采光适中，通风条件良好，居住舒适",
                 "decoration_quality": "装修简洁实用，维护状况良好，性价比高",
                 "space_layout": "空间布局紧凑，功能分区合理，储物空间充足",
-                "appliances_facilities": "基础设施完善，共享设施便利，性价比突出"
+                "appliances_facilities": "图片中可见的家具电器有限"
             }
         }
         

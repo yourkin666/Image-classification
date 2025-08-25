@@ -51,9 +51,11 @@ class ContentGenerator:
 - 对于appliances_facilities字段，必须仔细识别所有图片中可见的具体家具电器，并列出名称，避免重复
 
 appliances_facilities字段格式要求：
-- 综合所有图片看到的家具电器：appliances_facilities: "配备床、衣柜、沙发、电视、空调、冰箱等完整家具电器"
-- 如果看到客厅和卧室的不同设施：appliances_facilities: "配备沙发、茶几、电视、床、衣柜、空调、热水器等生活家具电器"
-- 如果看到办公区域：appliances_facilities: "配备书桌、书柜、电脑、床、衣柜、空调等办公生活家具电器"
+- 必须根据图片中实际可见的物品来生成描述
+- 如果看到床、衣柜等卧室家具：appliances_facilities: "配备床、衣柜等基础家具"
+- 如果看到沙发、茶几等客厅家具：appliances_facilities: "配备沙发、茶几等客厅家具"
+- 如果看到空调、电视等电器：appliances_facilities: "配备空调、电视等生活电器"
+- 如果看到多种家具电器：appliances_facilities: "配备床、衣柜、空调、电视等家具电器"
 - 如果看不到具体物品：appliances_facilities: "图片中可见的家具电器有限"
 
 禁止使用的虚泛词汇：
@@ -76,7 +78,7 @@ appliances_facilities字段格式要求：
 
 重要提醒：请综合分析所有图片，在appliances_facilities字段中列出您能看到的家具电器，如床、沙发、桌子、椅子、衣柜、空调、电视等。如果图片中看不到具体物品，请说明"图片中可见的家具电器有限"。
 
-最终要求：appliances_facilities字段必须包含具体的家具电器名称，不能使用任何虚泛描述。综合分析所有图片信息，生成连贯、完整的房源描述。
+最终要求：appliances_facilities字段必须包含具体的家具电器名称，不能使用任何虚泛描述。必须严格按照图片中实际可见的物品来生成描述，不要添加图片中没有的物品。综合分析所有图片信息，生成连贯、完整的房源描述。
 """
 
         # 根据业务类型调整prompt
@@ -87,6 +89,57 @@ appliances_facilities字段格式要求：
         }
 
         return business_prompts.get(business_type, base_prompt)
+
+    # ==== 新增：房间特征JSON生成 ====
+    @staticmethod
+    def generate_room_features_prompt() -> str:
+        """生成房间特征JSON的提示词"""
+        return (
+            "请分析这(些)房间图片，识别是否具备以下特征，并严格仅返回一个JSON对象：\n"
+            "{\n"
+            "  \"阳台\": true/false,\n"
+            "  \"独卫\": true/false,\n"
+            "  \"飘窗\": true/false,\n"
+            "  \"开间\": true/false,\n"
+            "  \"loft\": true/false,\n"
+            "  \"马桶\": true/false,\n"
+            "  \"蹲便\": true/false,\n"
+            "  \"上下铺\": true/false,\n"
+            "  \"精装\": true/false\n"
+            "}\n"
+            "要求：\n"
+            "- 只返回JSON，不要任何解释文字；\n"
+            "- 若无法确定，保守填false；\n"
+            "- 键名必须为上述中文；\n"
+        )
+
+    @staticmethod
+    def parse_features_ai_response(response_text: str) -> Optional[Dict[str, bool]]:
+        """解析AI返回的特征JSON"""
+        try:
+            text = response_text.strip()
+            if not text.startswith('{'):
+                # 尝试截取JSON
+                start_idx = text.find('{')
+                end_idx = text.rfind('}') + 1
+                if start_idx != -1 and end_idx > start_idx:
+                    text = text[start_idx:end_idx]
+            features = json.loads(text)
+
+            expected_keys = ["阳台", "独卫", "飘窗", "开间", "loft", "马桶", "蹲便", "上下铺", "精装"]
+            normalized: Dict[str, bool] = {}
+            for key in expected_keys:
+                val = features.get(key, False)
+                normalized[key] = bool(val)
+            return normalized
+        except Exception as e:
+            logger.error(f"解析特征JSON失败: {e}")
+            return None
+
+    @staticmethod
+    def default_features() -> Dict[str, bool]:
+        return {"阳台": False, "独卫": False, "飘窗": False, "开间": False, "loft": False,
+                "马桶": False, "蹲便": False, "上下铺": False, "精装": False}
 
     @staticmethod
     def parse_ai_response(response_text: str) -> Optional[Dict[str, str]]:
@@ -162,17 +215,17 @@ appliances_facilities字段格式要求：
             "lighting_comfort": "房间采光充足，通风条件良好，居住环境舒适宜人",
             "decoration_quality": "装修风格现代简约，墙面地面保养良好，整体美观协调",
             "space_layout": "空间布局合理，功能分区明确，储物空间设计充足",
-            "appliances_facilities": "配备床、衣柜、桌椅等基础家具，空调、热水器等生活电器"
+            "appliances_facilities": "图片中可见的家具电器有限"
         }
         
         # 根据业务类型调整
         if business_type == "whole_rent":
             fallback_content["space_layout"] = "空间宽敞明亮，布局合理流畅，适合家庭生活需求"
-            fallback_content["appliances_facilities"] = "配备床、沙发、电视、冰箱、洗衣机等完整家具电器"
+            fallback_content["appliances_facilities"] = "图片中可见的家具电器有限"
         elif business_type == "centralized":
-            fallback_content["appliances_facilities"] = "配备床、衣柜、空调、热水器等标准化基础设备"
+            fallback_content["appliances_facilities"] = "图片中可见的家具电器有限"
         elif business_type == "shared_rent":
             fallback_content["space_layout"] = "共享空间设计合理，性价比高，适合合租生活"
-            fallback_content["appliances_facilities"] = "配备床、衣柜、空调等基础家具电器"
+            fallback_content["appliances_facilities"] = "图片中可见的家具电器有限"
         
         return fallback_content 

@@ -30,6 +30,11 @@ logger.info("房源图片分析系统启动成功")
 async def startup_event():
     """应用启动时的初始化"""
     logger.info("应用启动，初始化资源...")
+    # 强制使用 .env 中的 GEMINI_API_KEY
+    if not settings.GEMINI_API_KEY:
+        from .core.logging import logger as _logger
+        _logger.error("缺少 GEMINI_API_KEY，已强制启用校验，服务启动失败")
+        raise RuntimeError("GEMINI_API_KEY is required. Set it in .env or environment variables.")
 
 @app.on_event("shutdown")
 async def shutdown_event_handler():

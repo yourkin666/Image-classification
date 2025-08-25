@@ -1,4 +1,4 @@
-import base64
+import os
 import time
 import json
 import traceback
@@ -14,6 +14,10 @@ from ..utils.url_utils import ensure_valid_mime_type_for_gemini
 def analyze_image_with_gemini(image_data, mime_type, url=None, request_id='unknown'):
     """使用Gemini AI分析图片是否为房间"""
     try:
+        # 若设置了强制要求使用密钥（由启动时校验保证），这里不再允许绕过
+        if os.getenv("DISABLE_GEMINI", "").lower() == "true":
+            raise RuntimeError("DISABLE_GEMINI is not allowed when GEMINI usage is enforced.")
+
         logger.info(
             f"Starting Gemini image analysis",
             request_id=request_id,
@@ -38,7 +42,14 @@ def analyze_image_with_gemini(image_data, mime_type, url=None, request_id='unkno
             request_id=request_id
         )
         
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        client = genai.Client(
+            api_key=settings.GEMINI_API_KEY,
+            http_options=types.HttpOptions(
+                headers={
+                    "User-Agent": "ImageClassification/1.0 (genai-python)"
+                }
+            )
+        )
         model = "gemini-2.0-flash-lite"
         
         logger.debug(
@@ -77,7 +88,7 @@ IMPORTANT: Return ONLY the JSON object, no other text or explanation."""
             parts=[
                 types.Part.from_bytes(
                     mime_type=safe_mime_type,
-                    data=base64.b64decode(image_data)
+                    data=image_data
                 ),
             ],
         )
@@ -161,8 +172,22 @@ class GeminiService:
     """Gemini AI服务类"""
     
     def __init__(self):
-        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        # 惰性初始化：仅当存在 API Key 时才创建客户端，避免测试收集阶段报错
         self.model = "gemini-2.0-flash-lite"
+        self.client = None
+        api_key = settings.GEMINI_API_KEY
+        if api_key:
+            try:
+                self.client = genai.Client(
+                    api_key=api_key,
+                    http_options=types.HttpOptions(
+                        headers={
+                            "User-Agent": "ImageClassification/1.0 (genai-python)"
+                        }
+                    )
+                )
+            except Exception as e:
+                logger.error(f"初始化 Gemini 客户端失败: {e}")
     
     async def generate_content_async(self, image_urls: List[str], prompt: str) -> Optional[str]:
         """异步生成内容"""
@@ -171,6 +196,26 @@ class GeminiService:
             
             if not image_urls:
                 raise ValueError("没有提供图片URL")
+            
+            # 若客户端尚未初始化，且存在 API Key，则尝试惰性创建
+            if self.client is None:
+                api_key = settings.GEMINI_API_KEY
+                if api_key:
+                    try:
+                        self.client = genai.Client(
+                            api_key=api_key,
+                            http_options=types.HttpOptions(
+                                headers={
+                                    "User-Agent": "ImageClassification/1.0 (genai-python)"
+                                }
+                            )
+                        )
+                    except Exception as e:
+                        logger.error(f"惰性创建 Gemini 客户端失败: {e}")
+                        return None
+                else:
+                    logger.error("未配置 GEMINI_API_KEY，无法调用 Gemini 服务")
+                    return None
             
             # 准备所有图片数据
             parts = [types.Part.from_text(text=prompt)]

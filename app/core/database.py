@@ -5,8 +5,18 @@ import aiomysql
 import logging
 from typing import Optional, Dict, Any, List
 from .config import settings
+import ssl
 
 logger = logging.getLogger(__name__)
+# 业务类型映射：DB改为tinyint(1:集中 centralized, 2:整租 whole_rent, 3:合租 shared_rent)
+BUSINESS_TYPE_TO_CODE = {
+    "centralized": 1,
+    "whole_rent": 2,
+    "shared_rent": 3,
+}
+
+CODE_TO_BUSINESS_TYPE = {v: k for k, v in BUSINESS_TYPE_TO_CODE.items()}
+
 
 # 数据库连接池
 _pool = None
@@ -24,6 +34,16 @@ DATABASE_CONFIG = {
     "maxsize": settings.DB_POOL_SIZE,
     "pool_recycle": settings.DB_POOL_RECYCLE
 }
+
+# SSL 配置（可选）
+if settings.DB_SSL_ENABLED:
+    ssl_ctx = ssl.create_default_context(cafile=settings.DB_SSL_CA or None)
+    if not settings.DB_SSL_VERIFY:
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+    if settings.DB_SSL_CERT and settings.DB_SSL_KEY:
+        ssl_ctx.load_cert_chain(certfile=settings.DB_SSL_CERT, keyfile=settings.DB_SSL_KEY)
+    DATABASE_CONFIG["ssl"] = ssl_ctx
 
 
 async def init_database_pool():
@@ -106,15 +126,32 @@ async def execute_update(query: str, params: tuple) -> int:
 
 
 # 房源分析相关的数据库操作
-async def insert_room_analysis(room_id: str, business_type: str, content: str = None, 
+def _normalize_business_type_to_code(business_type) -> int:
+    """将传入的业务类型(可能为枚举/字符串/数字)规范化为数据库 tinyint 代码。"""
+    # 已是合法代码
+    if isinstance(business_type, int):
+        return business_type if business_type in CODE_TO_BUSINESS_TYPE else None
+    # Pydantic Enum 或一般 Enum
+    bt = getattr(business_type, "value", business_type)
+    if bt is None:
+        return None
+    bt_str = str(bt).strip().lower()
+    return BUSINESS_TYPE_TO_CODE.get(bt_str)
+
+
+async def insert_room_analysis(room_id: str, business_type, content: str = None, 
                               processing_status: str = "pending") -> int:
     """插入房源分析记录"""
+    # 兼容：支持传入 Enum/字符串/数字，统一映射为tinyint
+    bt_code = _normalize_business_type_to_code(business_type)
+    if bt_code is None:
+        raise ValueError(f"Invalid business_type: {business_type}")
     query = """
     INSERT INTO qft_ai_room_analysis 
     (room_id, business_type, content, processing_status) 
     VALUES (%s, %s, %s, %s)
     """
-    params = (room_id, business_type, content, processing_status)
+    params = (room_id, bt_code, content, processing_status)
     return await execute_insert(query, params)
 
 
@@ -151,10 +188,15 @@ async def get_room_analysis(room_id: str) -> Optional[Dict[str, Any]]:
     
     if result:
         row = result[0]
+        # 将tinyint业务类型还原为字符串，保持对上层接口兼容
+        try:
+            _bt = CODE_TO_BUSINESS_TYPE.get(int(row[2])) if row[2] is not None else None
+        except Exception:
+            _bt = row[2]
         return {
             "id": row[0],
             "room_id": row[1],
-            "business_type": row[2],
+            "business_type": _bt,
             "content": row[3],
             "processing_status": row[4],
             "created_at": row[5],

@@ -54,10 +54,35 @@ class ProcessingStatusResponse(BaseModel):
     room_id: str
     business_type: str
     processing_status: ProcessingStatus
-    content: Optional[RoomContent] = None
+    content: Optional[dict] = Field(default=None, description="内容字段，已改为房间特征JSON结构")
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     error: Optional[str] = None
+class RoomFeature(str, Enum):
+    """房间特征枚举（用于参考）"""
+    BALCONY = "阳台"
+    PRIVATE_BATHROOM = "独卫"
+    BAY_WINDOW = "飘窗"
+    STUDIO = "开间"
+    LOFT = "loft"
+    TOILET = "马桶"
+    SQUAT_TOILET = "蹲便"
+    BUNK_BED = "上下铺"
+    FINE_DECORATION = "精装"
+
+
+class RoomFeatures(BaseModel):
+    """房间特征模型（数据库content字段的新结构）"""
+    阳台: bool = False
+    独卫: bool = False
+    飘窗: bool = False
+    开间: bool = False
+    loft: bool = False
+    马桶: bool = False
+    蹲便: bool = False
+    上下铺: bool = False
+    精装: bool = False
+
 
 
  

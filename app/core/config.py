@@ -16,6 +16,12 @@ class Settings:
     DB_USER: str = os.getenv("DB_USER", "qft_ai_test")
     DB_PASSWORD: str = os.getenv("DB_PASSWORD", "uJOLj2K09")
     DB_CHARSET: str = os.getenv("DB_CHARSET", "utf8mb4")
+    # 数据库 SSL 配置（可选）
+    DB_SSL_ENABLED: bool = os.getenv("DB_SSL_ENABLED", "false").lower() == "true"
+    DB_SSL_VERIFY: bool = os.getenv("DB_SSL_VERIFY", "true").lower() == "true"
+    DB_SSL_CA: str = os.getenv("DB_SSL_CA", "")  # 可选 CA 证书路径
+    DB_SSL_CERT: str = os.getenv("DB_SSL_CERT", "")  # 可选客户端证书
+    DB_SSL_KEY: str = os.getenv("DB_SSL_KEY", "")  # 可选客户端私钥
     
     # 数据库连接池配置
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "10"))
